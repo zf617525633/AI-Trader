@@ -360,7 +360,7 @@ def _decorate_stock_analysis_with_quote(base_payload: dict[str, Any]) -> dict[st
     fallback_quote = {
         "current_price": payload.get("current_price"),
         "price_as_of": fallback_price_as_of,
-        "price_source": "alpha_vantage_time_series_daily_adjusted",
+        "price_source": "alpha_vantage_time_series_daily",
     }
     quote_payload = _get_stock_quote_payload(payload["symbol"]) or fallback_quote
     payload["current_price"] = quote_payload.get("current_price")
@@ -384,8 +384,11 @@ def _parse_alpha_timestamp(raw: Optional[str]) -> Optional[str]:
 
 
 def _alpha_vantage_get(params: dict[str, Any]) -> dict[str, Any]:
-    if not ALPHA_VANTAGE_API_KEY or ALPHA_VANTAGE_API_KEY == "demo":
+    if not ALPHA_VANTAGE_API_KEY:
         raise RuntimeError("ALPHA_VANTAGE_API_KEY is not configured")
+    
+    # Allow 'demo' key but warn in logs if possible, or just let it through.
+    # The actual Alpha Vantage API will restrict 'demo' to IBM only.
     response = requests.get(
         ALPHA_VANTAGE_BASE_URL,
         params={**params, "apikey": ALPHA_VANTAGE_API_KEY},
@@ -627,9 +630,10 @@ def _fetch_news_feed(category: str, definition: dict[str, str]) -> list[dict[str
     return _dedupe_news_items(normalized_items)
 
 
-def _fetch_daily_adjusted_series(symbol: str) -> list[dict[str, Any]]:
+def _fetch_daily_series(symbol: str) -> list[dict[str, Any]]:
+    # Use TIME_SERIES_DAILY instead of ADJUSTED to support free tier API keys.
     payload = _alpha_vantage_get({
-        "function": "TIME_SERIES_DAILY_ADJUSTED",
+        "function": "TIME_SERIES_DAILY",
         "symbol": symbol,
         "outputsize": "compact",
     })
@@ -642,11 +646,13 @@ def _fetch_daily_adjusted_series(symbol: str) -> list[dict[str, Any]]:
         if not isinstance(values, dict):
             continue
         try:
-            close_value = float(values.get("5. adjusted close") or values.get("4. close"))
+            # Field names for DAILY: '4. close'
+            close_value = float(values.get("4. close") or 0)
         except (TypeError, ValueError):
             continue
         try:
-            volume_value = float(values.get("6. volume") or 0)
+            # Field names for DAILY: '5. volume'
+            volume_value = float(values.get("5. volume") or 0)
         except (TypeError, ValueError):
             volume_value = 0.0
         rows.append({
@@ -853,7 +859,10 @@ def _build_etf_flow_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     etf_rows: list[dict[str, Any]] = []
 
     for symbol in BTC_ETF_SYMBOLS:
-        series = _fetch_daily_adjusted_series(symbol)
+        try:
+            series = _fetch_daily_series(symbol)
+        except Exception:
+            continue
         if len(series) <= ETF_FLOW_BASELINE_VOLUME_DAYS:
             continue
 
@@ -923,7 +932,7 @@ def _build_etf_flow_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 
 def _build_stock_analysis(symbol: str) -> dict[str, Any]:
-    series = _fetch_daily_adjusted_series(symbol)
+    series = _fetch_daily_series(symbol)
     if len(series) < 20:
         raise RuntimeError(f"Not enough history for {symbol}")
 
@@ -1028,10 +1037,10 @@ def _build_stock_analysis(symbol: str) -> dict[str, Any]:
 
 
 def _build_macro_signals() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    qqq_series = _fetch_daily_adjusted_series(MACRO_SYMBOLS["growth"])
-    xlp_series = _fetch_daily_adjusted_series(MACRO_SYMBOLS["defensive"])
-    gld_series = _fetch_daily_adjusted_series(MACRO_SYMBOLS["safe_haven"])
-    uup_series = _fetch_daily_adjusted_series(MACRO_SYMBOLS["dollar"])
+    qqq_series = _fetch_daily_series(MACRO_SYMBOLS["growth"])
+    xlp_series = _fetch_daily_series(MACRO_SYMBOLS["defensive"])
+    gld_series = _fetch_daily_series(MACRO_SYMBOLS["safe_haven"])
+    uup_series = _fetch_daily_series(MACRO_SYMBOLS["dollar"])
     btc_series = _fetch_btc_daily_series()
 
     qqq_return = _calc_return_pct(qqq_series, MACRO_SIGNAL_LOOKBACK_DAYS)
@@ -1092,7 +1101,7 @@ def _build_macro_signals() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             "lookback_days": MACRO_SIGNAL_LOOKBACK_DAYS,
             "explanation": explanation,
             "explanation_zh": explanation_zh,
-            "source": "TIME_SERIES_DAILY_ADJUSTED",
+            "source": "TIME_SERIES_DAILY",
             "as_of": qqq_series[0]["date"],
         })
 
@@ -1120,7 +1129,7 @@ def _build_macro_signals() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             "lookback_days": MACRO_SIGNAL_LOOKBACK_DAYS,
             "explanation": explanation,
             "explanation_zh": explanation_zh,
-            "source": "TIME_SERIES_DAILY_ADJUSTED",
+            "source": "TIME_SERIES_DAILY",
             "as_of": qqq_series[0]["date"],
         })
 
@@ -1148,7 +1157,7 @@ def _build_macro_signals() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             "lookback_days": MACRO_SIGNAL_LOOKBACK_DAYS,
             "explanation": explanation,
             "explanation_zh": explanation_zh,
-            "source": "TIME_SERIES_DAILY_ADJUSTED",
+            "source": "TIME_SERIES_DAILY",
             "as_of": gld_series[0]["date"],
         })
 
@@ -1186,7 +1195,7 @@ def _build_macro_signals() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
     source = {
         "alpha_vantage_functions": [
-            "TIME_SERIES_DAILY_ADJUSTED",
+            "TIME_SERIES_DAILY",
             "DIGITAL_CURRENCY_DAILY",
         ],
         "news_dependency": "market_news_snapshots.macro",
